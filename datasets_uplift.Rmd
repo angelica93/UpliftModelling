@@ -1,0 +1,130 @@
+---
+title: "Diferentes Fontes de Dados no contexto de Modelagem Uplift"
+author: "Angelica"
+date: "Setembro de 2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Utilizaremos no ajuste dos Modelos Uplift três diferentes bases de dados
+
+  - **Criteo Uplift Modeling Dataset**
+  
+  Esse dataset é relacionado ao artigo “A Large Scale Benchmark for Uplift Modeling” - Eustache Diemert, Artem Betlei, Christophe Renaudin; (Criteo AI Lab), Massih-Reza Amini (LIG, Grenoble INP). Disponível em: https://ailab.criteo.com/criteo-uplift-prediction-dataset/.
+  
+  Os dados em questao sao resultantes de varios testes incrementais, onde uma parte aleatoria da populacao é controle ( impedida de ser alvo da acao) e a outra tratamento. Consiste de 25 milhoes de linhas, cada uma representando o usuario com 11 variaveis, um indicador de tratamento e 2 rotulos (visitas e convers?es).
+
+Descricao detalhada dos campos:
+
+f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11: variaveis descaracterizadas que foram observadas 
+tratamento: grupo de tratamento (1 = tratado, 0 = controle)
+conversao: se ocorreu uma conversao para este usuario 
+visit: se uma visita ocorreu para este usuario
+exposicao: efeito do tratamento, se o usuario foi efetivamente exposto (binario).
+
+ 
+  - **Dados Sintéticos para Modelagem Uplift**
+  
+  Esses dados foram disponibilizados em Fevereiro de 2020, em: https://zenodo.org/record/3653141#.X1orrWdKhQJ.
+  
+  - **Dados Campanha de Marketing do Kaggle**
+  
+  Desafio no Kaggle com dados de uma Campanha de Marketing, ele foi abordado como um problema no contexto de Modelagem Uplift. Disponível em: https://www.kaggle.com/davinwijaya/customer-retention.
+
+Tabela data3.csv
+
+
+
+```{r}
+library(data.table)
+library(dplyr)
+
+data=fread('amostra_criteo_uplift')
+
+summary(data)
+#retirando a coluna de index da base
+datan=select(data,-V1)
+```
+
+Analisando as variáveis da base de dados.
+
+```{r}
+library(tidyverse)
+library(skimr)
+
+#Visao inicial dos dados
+glimpse(datan)
+
+datan %>%
+  mutate_if(is.character,as.factor) %>%
+  skimr::skim()
+
+```
+
+Trabalhando com os dados para depois ajustar um modelo.
+
+```{r}
+#instalando uplift
+require(uplift)
+#funcao que transforma a variavel resposta - rvtu
+require(plyr)
+
+data_rvtu <- rvtu(visit~f1+f2+f3+f4+f5+f6+f7+f8+f9+f10+f11+trt(as.numeric(treatment)),datan,method="none")
+
+names(data_rvtu)
+
+explore(y~f1+f2+f3+f4+f5+f6+f7+f8+f9+f10+f11+trt(ct),
+        data=data_rvtu)
+
+# targeted
+count(data_rvtu[data_rvtu$ct == 1,], "y")$freq / sum(data_rvtu$ct == 1)
+# control
+count(data_rvtu[data_rvtu$ct == 0,], "y")$freq / sum(data_rvtu$ct == 0)
+
+```
+
+
+### Modelagem considerando Regressão Logistica
+
+```{r}
+
+#ajustando uma logistico simples
+logit.formula <- ~f1+f2+f3+f4+f5+f6+f7+f8+f9+f10+f11
+#testar intera??es
+
+set.seed(123)
+require(glmnet)
+#library(tidyr)
+logit.x.interactions <- model.matrix(logit.formula, data=data_rvtu)
+logit.z <- data_rvtu$z
+logit.y <- data_rvtu$y
+
+# traditional classifier, y as response
+logit.cv.lasso.y.interactions <- cv.glmnet(logit.x.interactions, logit.y, alpha=1, family="binomial")
+plot(logit.cv.lasso.y.interactions)
+
+# uplift classifier, z as response
+logit.cv.lasso.z.interactions <- cv.glmnet(logit.x.interactions, logit.z, alpha=1, family="binomial")
+plot(logit.cv.lasso.z.interactions)
+
+coef(logit.cv.lasso.z.interactions)[which(coef(logit.cv.lasso.z.interactions) != 0),]
+
+coef(logit.cv.lasso.z.interactions,
+     s=logit.cv.lasso.z.interactions$lambda.min)[which(coef(logit.cv.lasso.z.interactions,
+                                                            s=logit.cv.lasso.z.interactions$lambda.min) !=0),]
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

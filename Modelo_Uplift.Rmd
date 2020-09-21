@@ -1,0 +1,172 @@
+---
+title: 'Analise: Modelagem Uplift'
+editor_options: Angelica Custodio
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+chunk_output_type: inline
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(skimr)
+url = "http://www.minethatdata.com/Kevin_Hillstrom_MineThatData_E-MailAnalytics_DataMiningChallenge_2008.03.20.csv"
+hc = read.csv(file=url)
+
+```
+
+## Análise unidimensional
+
+```{r}
+#Visão inicial dos dados
+glimpse(hc)
+
+hc %>%
+  mutate_if(is.character,as.factor) %>%
+  skimr::skim()
+
+```
+
+## Pré Modelagem 1 - Ajustando os dados
+
+```{r}
+
+hc$treat <- ifelse(as.character(hc$segment) != "No E-Mail", TRUE, FALSE)
+hc$mens <- as.factor(hc$mens)
+hc$womens <- as.factor(hc$womens)
+hc$newbie <- as.factor(hc$newbie)
+#instalando uplift
+require(uplift)
+#função que transforma a variavel resposta
+?rvtu
+require(plyr)
+count(hc, "segment")
+
+#filtrando os homens da analise
+hc_rvtu <- rvtu(visit~recency+history_segment+history+mens+womens+zip_code+newbie+channel+trt(as.numeric(treat)),
+                data=hc[hc$segment != "Mens E-Mail",],
+                method="none")
+
+names(hc_rvtu)
+
+```
+
+## Pré Modelagem 2 - Analisando os dados
+
+```{r}
+
+explore(y~recency+history_segment+history+mens+womens+zip_code+newbie+channel+trt(ct),
+        data=hc_rvtu)
+# targeted
+count(hc_rvtu[hc_rvtu$ct == 1,], "y")$freq / sum(hc_rvtu$ct == 1)
+# control
+count(hc_rvtu[hc_rvtu$ct == 0,], "y")$freq / sum(hc_rvtu$ct == 0)
+
+```
+
+## Pré Modelagem 2 - Analisando os dados
+#### Visualização
+
+```{r}
+
+par(mfrow=c(2,3))
+boxplot(recency~visit, data=hc[hc$treat,],
+        ylab="recency", xlab="visit")
+boxplot(recency~conversion, data=hc[hc$treat,],
+        ylab="recency", xlab="conversion")
+boxplot(split(hc$recency[hc$spend != 0 & hc$treat],
+              cut(hc$spend[hc$spend != 0 & hc$treat], 3)),
+        ylab="recency", xlab="spend for converted")
+mtext("recency target", side=3, line=-3, outer=TRUE, cex=2, font=2)
+boxplot(recency~visit, data=hc[! hc$treat,],
+        ylab="recency", xlab="visit")
+boxplot(recency~conversion, data=hc[hc$treat,],
+        ylab="recency", xlab="conversion")
+boxplot(split(hc$recency[hc$spend != 0 & ! hc$treat],
+              cut(hc$spend[hc$spend != 0 & ! hc$treat], 3)),
+        ylab="recency", xlab="spend for converted")
+mtext("recency control", side=3, line=-39, outer=TRUE, cex=2, font=2)
+
+pairs(~recency+history_segment+history,
+      data=hc_rvtu, col=hc_rvtu$y+1)
+```
+
+
+## Modelagem 1 
+#### Ajuste Modelo Logistico
+
+```{r}
+
+#ajustando uma logistica simples
+logit.formula <- ~recency+mens+womens+zip_code+newbie+channel
+
+#ajustando um modelo com interacoes
+logit.formula.interactions <- as.formula(paste("~history_segment*mens+history_segment*womens",
+                                               "history_segment*newbie",
+                                               "zip_code*mens+zip_code*womens+zip_code*newbie",
+                                               "channel*mens+channel*womens+channel*newbie",
+                                               "channel*history_segment",
+                                               sep="+"))
+
+set.seed(123)
+require(glmnet)
+#library(tidyr)
+logit.x.interactions <- model.matrix(logit.formula.interactions, data=hc_rvtu)
+logit.z <- hc_rvtu$z
+logit.y <- hc_rvtu$y
+
+# traditional classifier, y as response
+logit.cv.lasso.y.interactions <- cv.glmnet(logit.x.interactions, logit.y, alpha=1, family="binomial")
+plot(logit.cv.lasso.y.interactions)
+
+# uplift classifier, z as response
+logit.cv.lasso.z.interactions <- cv.glmnet(logit.x.interactions, logit.z, alpha=1, family="binomial")
+plot(logit.cv.lasso.z.interactions)
+
+coef(logit.cv.lasso.z.interactions)[which(coef(logit.cv.lasso.z.interactions) != 0),]
+
+coef(logit.cv.lasso.z.interactions,
+     s=logit.cv.lasso.z.interactions$lambda.min)[which(coef(logit.cv.lasso.z.interactions,
+                                                            s=logit.cv.lasso.z.interactions$lambda.min) != 0),]
+```
+
+## Analise do modelo ajustado
+
+```{r}
+
+require(ROCR)
+preds.y.interactions.1se <- predict(logit.cv.lasso.y.interactions, logit.x.interactions,
+                                    s=logit.cv.lasso.y.interactions$lambda.1se, type="response")
+pred.y <- prediction(preds.y.interactions.1se, hc_rvtu$y)
+auc.y <- ROCR:::performance(pred.y, "auc")
+as.numeric(auc.y@y.values)
+
+preds.z.interactions.1se <- predict(logit.cv.lasso.z.interactions, logit.x.interactions,
+                                    s=logit.cv.lasso.z.interactions$lambda.1se, type="response")
+pred.z <- prediction(preds.z.interactions.1se, hc_rvtu$z)
+auc.z <- ROCR:::performance(pred.z, "auc")
+as.numeric(auc.z@y.values)
+
+```
+
+## Analise de Interpretabilidade
+
+
+
+# Analise do modelo ajustado
+Analise da Medida Qini - entender porque nao funciona
+
+```{r}
+
+#ver em https://github.com/lrnzcig/sisifoR/blob/master/R/uplift.R
+#qini_from_data(preds.z.interactions.1se,
+#               hc_rvtu,
+#               plotit=TRUE,
+#               x_axis_ratio=TRUE)
+
+```
